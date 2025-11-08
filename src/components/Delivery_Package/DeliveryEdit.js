@@ -237,16 +237,14 @@ function DeliveryEdit(props) {
           );
           setValue(
             "MATERIAL",
-            `${result.data.result.MATERIAL_NO.replace(/^0+/, "")}-${
-              result.data.result.MATERIAL_NAME
+            `${result.data.result.MATERIAL_NO.replace(/^0+/, "")}-${result.data.result.MATERIAL_NAME
             }`
           );
           //setValue("AVAILABLE_STOCK", result.data.result.AVAIBLE_STOCK);
           setValue("ISSUE_QUANTITY", result.data.result.ISSUE_QTY);
           setValue(
             "TRANSPORTER",
-            `${result.data.result.TRANSPOTER_ID.replace(/^0+/, "")}-${
-              result.data.result.TRANSPOTER_NAME
+            `${result.data.result.TRANSPOTER_ID.replace(/^0+/, "")}-${result.data.result.TRANSPOTER_NAME
             }`
           );
           //setValue("TRANSPORTATION_ZONE", result.data.result.TRANS_ZONE);
@@ -712,7 +710,7 @@ function DeliveryEdit(props) {
                           e.target.value
                         );
                       }}
-                      //   value={storageSearch1}
+                    //   value={storageSearch1}
                     />
                     {errors.STORAGE_LOCATION && (
                       <p className="form-error">This field is required</p>
@@ -1053,7 +1051,10 @@ function DeliveryEdit(props) {
                           required: true,
                         })}
                         name="VALUATION_TYPE"
-                        disabled={currentState === "2"}
+                        disabled={true} // always disabled for edit screen
+                        className="disabled-input"
+                        value={doDetails?.VALUATION_TYPE || ""}
+                        readOnly
                       />
                       {errors.VALUATION_TYPE && (
                         <p className="form-error">This field is required</p>
