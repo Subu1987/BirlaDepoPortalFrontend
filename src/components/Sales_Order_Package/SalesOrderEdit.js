@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { connect } from "react-redux";
 import { useForm } from "react-hook-form";
@@ -29,11 +29,15 @@ let default_config = {
   keylabels: [],
   return_field_value: "",
   return_field_key: "",
-  setStateFunction: function () {},
+  setStateFunction: function () { },
 };
 
 function SalesOrderEdit(props) {
   let { id } = useParams();
+
+  // Prevent double-click submits
+  const isSubmittingRef = useRef(false);   // For step 1 → step 2
+  const isSavingRef = useRef(false);       // For final Save update
 
   const [currentState, setCurrentState] = useState("1");
   const {
@@ -97,6 +101,13 @@ function SalesOrderEdit(props) {
 
   //+++++++++++++++++++++++++++++++++++++++++++++++++form submit handler++++++++++++++++++++++++++++++++++++++++++
   const onSubmit = (data) => {
+
+    // 🚫 Prevent double Next-click
+    if (isSubmittingRef.current) {
+      console.warn("Duplicate onSubmit prevented");
+      return;
+    }
+    isSubmittingRef.current = true;
     console.log(data);
 
     if (Number(data.TARGET_QTY) === 0) {
@@ -137,15 +148,64 @@ function SalesOrderEdit(props) {
       })
       .finally(() => {
         props.loading(false);
+        isSubmittingRef.current = false;   // release lock
       });
   };
   //+++++++++++++++++++++++++++++++++++++++++++++++++form submit handler end++++++++++++++++++++++++++++++++++++++++++
 
   //+++++++++++++++++++++++++++++++++++++++++++++++++save form data to server+++++++++++++++++++++++++++++++++++++++++++++++++++++
   let saveFormData = () => {
+    // 🚫 Prevent double Save-click
+    if (isSavingRef.current) {
+      console.warn("Duplicate saveFormData prevented");
+      return;
+    }
+    isSavingRef.current = true;
+
+    // ---------- FORM SAFETY VALIDATION ----------
+    // Basic required checks before calling API
+    const missing = [];
+    if (!finalFormData || Object.keys(finalFormData).length === 0) {
+      missing.push("form data");
+    }
+    if (!shipToPartyValue || !shipToPartyValue.value) {
+      missing.push("Ship To Party");
+    }
+    if (!materialValue || !materialValue.value) {
+      missing.push("Material");
+    }
+    if (!selectedSupplyingPlant || !selectedSupplyingPlant.WERKS) {
+      missing.push("Supplying Plant");
+    }
+    if (
+      !finalFormData ||
+      finalFormData.TARGET_QTY === undefined ||
+      finalFormData.TARGET_QTY === null ||
+      finalFormData.TARGET_QTY === "" ||
+      Number(finalFormData.TARGET_QTY) === 0
+    ) {
+      missing.push("Quantity (non-zero)");
+    }
+    // If sales area is BC01 and L2 reason is required (your UI shows L2/L3 reason), ensure reason exists
+    if (selectedSalesArea?.VKORG === "BC01") {
+      // if reason is expected to be required in BC01
+      if (!reason || reason === "") {
+        missing.push("L2/L3 Reason");
+      }
+    }
+
+    if (missing.length > 0) {
+      const msg = `Please provide: ${missing.join(", ")}`;
+      Swal.fire("Error", msg, "error");
+      isSavingRef.current = false;
+      return;
+    }
+    // ---------- END VALIDATION ----------
+
     //api call
     console.log(shipToPartyValue);
     console.log(finalFormData);
+
     let s_inco = allOrderIncoTerms.find(
       (ele) => ele.INCO1 === finalFormData.INCO_TERM1
     );
@@ -163,7 +223,7 @@ function SalesOrderEdit(props) {
       IM_REMARKS: finalFormData.REMARKS,
       IM_UOM: finalFormData.UOM,
       IM_INCO: finalFormData.INCO_TERM1,
-      IM_INCO_DESC: s_inco.BEZEI,
+      IM_INCO_DESC: s_inco ? s_inco.BEZEI : "",
       IM_L2_REASON: reason ? reason : "",
     };
     if (finalFormData.IM_REJ_REASON !== "select") {
@@ -200,6 +260,7 @@ function SalesOrderEdit(props) {
       })
       .finally(() => {
         props.loading(false);
+        isSavingRef.current = false; // release lock
       });
   };
 
@@ -379,8 +440,7 @@ function SalesOrderEdit(props) {
               });
               setValue(
                 "MATERIAL",
-                `${defaultSoDetails.MATNR.replace(/^0+/, "")}-${
-                  defaultSoDetails.MAKTX
+                `${defaultSoDetails.MATNR.replace(/^0+/, "")}-${defaultSoDetails.MAKTX
                 }`
               );
               setValue("SHIP_POINT", defaultSoDetails.SHIP_POINT);
@@ -626,15 +686,21 @@ function SalesOrderEdit(props) {
   };
 
   let selectValue = (e) => {
-    setSelectedShippingType(e.target.value);
-    fetchPlant2(e.target.value);
-    setTimeout(setSelectedShippingType(e.target.value), 500);
+    const vsart = e.target.value;
+    setSelectedShippingType(vsart);
 
-    console.log(selectAllOrderType);
-    if (selectAllOrderType !== "ZN02" && selectedSalesArea.VKORG === "BC01") {
+    fetchPlant2(vsart);
+
+    // Only open Plant2 modal if user is actually editing
+    if (
+      currentState === "1" &&
+      selectAllOrderType !== "ZN02" &&
+      selectedSalesArea.VKORG === "BC01"
+    ) {
       setIsPlant2ModalVisible(true);
     }
   };
+
 
   //++++++++++++++++++++++++++++++++Reason Api++++++++++++++++++++++++//
 
@@ -807,7 +873,7 @@ function SalesOrderEdit(props) {
       });
   }, [selectedSalesArea, selectedSoldtoParty, selectedSupplyingPlant]);
 
-  let setBlankReason = (row) => {};
+  let setBlankReason = (row) => { };
 
   useEffect(() => {
     if (index === "L1") {
@@ -1876,13 +1942,13 @@ function SalesOrderEdit(props) {
       >
         {Object.keys(salesEditResponse).length > 0
           ? salesEditResponse.map((msg, i) => (
-              <div style={{ margin: "25px 0px" }}>
-                <img className="success-img" src="/images/success_tick.jpeg" />
-                &nbsp;&nbsp;&nbsp;
-                <span className="success-msg">{msg.MESSAGE}</span>
-                <br />
-              </div>
-            ))
+            <div style={{ margin: "25px 0px" }}>
+              <img className="success-img" src="/images/success_tick.jpeg" />
+              &nbsp;&nbsp;&nbsp;
+              <span className="success-msg">{msg.MESSAGE}</span>
+              <br />
+            </div>
+          ))
           : null}
         <Link
           to="/dashboard/sales-order/list"
@@ -1901,7 +1967,7 @@ function SalesOrderEdit(props) {
         size="lg"
         centered
         className="modal"
-        // onHide={() => setIsPlant2ModalVisible(false)}
+      // onHide={() => setIsPlant2ModalVisible(false)}
       >
         <Modal.Header>
           <Modal.Title>Select Plant Entries</Modal.Title>
@@ -1937,7 +2003,7 @@ function SalesOrderEdit(props) {
                       setValue("PLANT", `${row.WERKS} - ${row.NAME1}`);
                       setIsPlant2ModalVisible(false);
                       setSelectedSupplyingPlant(row);
-                      setFinalFormData(row);
+                      //setFinalFormData(row);
                       setINDEX(row.INDEX1);
                     }}
                   >
@@ -1952,18 +2018,20 @@ function SalesOrderEdit(props) {
                     <td>
                       <button
                         className="button search-button"
-                        onClick={() => {
+                        onClick={(ev) => {
+                          ev.stopPropagation();                      // <-- FIX
                           setSelectedPlant2(row);
                           fetchReason(row);
                           setValue("PLANT", `${row.WERKS} - ${row.NAME1}`);
                           setIsPlant2ModalVisible(false);
                           setSelectedSupplyingPlant(row);
-                          setFinalFormData(row);
+                          //setFinalFormData(row);
                           setINDEX(row.INDEX1);
                         }}
                       >
                         select
                       </button>
+
                     </td>
                   </tr>
                 ))}
@@ -2013,14 +2081,15 @@ function SalesOrderEdit(props) {
                     <td>
                       <button
                         className="button search-button"
-                        onClick={() => {
+                        onClick={(ev) => {
+                          ev.stopPropagation();                   // <-- FIX
                           setIsReasonModalVisible(false);
                           setReason(row.REASON_CODE);
-                          // setBlankReason(row);
                         }}
                       >
                         select
                       </button>
+
                     </td>
                   </tr>
                 ))}

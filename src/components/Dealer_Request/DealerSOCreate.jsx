@@ -13,6 +13,7 @@ import Modal from "react-bootstrap/Modal";
 import Table from "react-bootstrap/Table";
 import AsyncSelect from "react-select/async";
 import { v4 as uuidv4 } from "uuid";
+import { useRef } from "react";   // <-- NEW
 import Select from "react-select";
 import fetchCustomerNumber from "../../Functions/fetchCustomer";
 import filterOptions from "../../Functions/filterData";
@@ -34,11 +35,25 @@ let default_config = {
   keylabels: [],
   return_field_value: "",
   return_field_key: "",
-  setStateFunction: function () {},
+  setStateFunction: function () { },
 };
 
 function DealerSOCreate(props) {
   const { id } = useParams();
+
+  // 🚀 Duplicate-action protection
+  const isSubmittingRef = useRef(false);
+  const isSavingRef = useRef(false);
+  const uuidRef = useRef(null);
+
+  const generateFreshUUID = () => {
+    const id = uuidv4();
+    uuidRef.current = id;
+    localStorage.setItem("salesOrderUUID", id);
+    return id;
+  };
+
+
 
   const [currentState, setCurrentState] = useState("1");
   const {
@@ -82,7 +97,8 @@ function DealerSOCreate(props) {
   const [allPromoters, setAllPromoters] = useState([]);
 
   const [plant2Data, setPlant2Data] = useState([]);
-  const [selectedShippingType, setSelectedShippingType] = useAsyncState("");
+  //const [selectedShippingType, setSelectedShippingType] = useAsyncState("");
+  const [selectedShippingType, setSelectedShippingType] = useState("");
   const [selectAllOrderType, setAllOrderType] = useState("");
   const [isPlant2ModalVisible, setIsPlant2ModalVisible] = useState(false);
   const [selectedPlant2, setSelectedPlant2] = useState([]);
@@ -102,19 +118,47 @@ function DealerSOCreate(props) {
   const [materialValue, setMaterialValue] = useState([]);
   const [soDetails, setSoDetails] = useState({});
 
+  useEffect(() => {
+    if (currentState === "3") {
+      uuidRef.current = null;
+      localStorage.removeItem("salesOrderUUID");
+    }
+  }, [currentState]);
+
+  useEffect(() => {
+    return () => {
+      uuidRef.current = null;
+      localStorage.removeItem("salesOrderUUID");
+    };
+  }, []);
+
+
   //+++++++++++++++++++++++++++++++++++++++++++++++++form submit handler++++++++++++++++++++++++++++++++++++++++++
-  const onSubmit = (data) => {
-    http
-      .post(apis.COMMON_POST_WITH_FM_NAME, {
+  const onSubmit = async (data) => {
+    if (isSubmittingRef.current) {
+      console.warn("Duplicate NEXT prevented");
+      return;
+    }
+    isSubmittingRef.current = true;
+
+    try {
+      const res = await http.post(apis.COMMON_POST_WITH_FM_NAME, {
         fm_name: "ZRFC_DOCTYPE_PLANT_CHECK",
         params: {
           IM_AUART: selectAllOrderType,
           IM_WERKS: selectedSupplyingPlant.WERKS,
         },
-      })
-      .then((res) => checkDOCTypeAll(res.data.result.ET_RETURN, data))
-      .catch((err) => console.log(data));
+      });
+
+      checkDOCTypeAll(res.data.result.ET_RETURN, data);
+    } catch (err) {
+      console.error(err);
+      Swal.fire("Error", "Unable to verify order type", "error");
+    } finally {
+      isSubmittingRef.current = false;
+    }
   };
+
 
   const checkDOCTypeAll = (data, dataOfForm) => {
     let isError = false;
@@ -209,16 +253,76 @@ function DealerSOCreate(props) {
   };
 
   //+++++++++++++++++++++++++++++++++++++++++++++++++save form data to server+++++++++++++++++++++++++++++++++++++++++++++++++++++
-  let saveFormData = async (confirm = "") => {
-    let UUID = uuidv4();
-    //api call
-    console.log(finalFormData, confirm);
+  let saveFormData = async (confirmFromPop = "") => {
+    console.log("[SAVE_ATTEMPT] Starting save...", { confirmFromPop });
+
+    // Prevent double-click
+    if (isSavingRef.current) {
+      console.warn("[SAVE_BLOCKED] Duplicate click prevented");
+      return;
+    }
+    isSavingRef.current = true;
+
+    // Safety: finalFormData present
+    if (!finalFormData || Object.keys(finalFormData).length === 0) {
+      Swal.fire("Error", "Form is incomplete. Please review before saving.", "error");
+      isSavingRef.current = false;
+      return;
+    }
+
+    // Normalized dup-confirm flag we'll send to SAP
+    let dupConfirmFlag = "";
+
+    // 1) Duplicate check (skip if caller already confirmed via POP)
+    if (confirmFromPop !== "Y") {
+      try {
+        const checkResult = await checkAndCreateOrder({
+          soldTo: selectedSoldtoParty.KUNNR,
+          shipTo: selectedShiptoparty.KUNNR,
+          quantity: finalFormData.TARGET_QTY,
+        });
+
+        // If user cancelled duplicate flow
+        if (!checkResult) {
+          console.warn("[DUPLICATE_CANCELLED] User stopped creation");
+          isSavingRef.current = false;
+          isSubmittingRef.current = false;
+          // ensure no stray UUID
+          localStorage.removeItem("salesOrderUUID");
+          return;
+        }
+
+        // Normalize: checkResult could be boolean or object
+        if (typeof checkResult === "object") {
+          dupConfirmFlag = checkResult.confirm || checkResult.confirmed || "";
+        } else if (typeof checkResult === "boolean" && checkResult === true) {
+          dupConfirmFlag = "";
+        } else {
+          dupConfirmFlag = "";
+        }
+      } catch (err) {
+        console.error("[DUP_CHECK_ERROR]", err);
+        Swal.fire("Error", "Unable to check duplicate orders. Please try again.", "error");
+        isSavingRef.current = false;
+        isSubmittingRef.current = false;
+        localStorage.removeItem("salesOrderUUID");
+        return;
+      }
+    } else {
+      // caller told us to force-continue (user confirmed POP)
+      dupConfirmFlag = "Y";
+    }
+
+    // 2) Generate UUID only now (after duplicate-check)
+    const UUID = generateFreshUUID();
+    console.log("[UUID_GENERATED]", UUID);
+
+    // 3) Build body (incoDesc resolved as before)
     let incoDesc = allOrderIncoTerms.filter(
       (d) => d.INCO1 === finalFormData?.INCO_TERM1
     );
     incoDesc = incoDesc[0]?.BEZEI;
 
-    localStorage.setItem("salesOrderUUID", UUID);
     let body = {
       order_header: {
         DOC_TYPE: finalFormData.DOC_TYPE,
@@ -238,126 +342,107 @@ function DealerSOCreate(props) {
           SHIP_TYPE: finalFormData.SHIP_TYPE,
           SHIP_POINT: finalFormData.SHIP_POINT,
           ITM_NUMBER: "000010",
-          // Newly Added As per require
           SALES_UNIT: finalFormData.SALES_UNIT,
           TARGET_QTY: finalFormData.TARGET_QTY,
           TARGET_QU: finalFormData.SALES_UNIT,
         },
       ],
       partners: [
-        {
-          PARTN_ROLE: "WE",
-          PARTN_NUMB: selectedShiptoparty.KUNNR,
-          ITM_NUMBER: "000000",
-        },
-        {
-          PARTN_ROLE: "AG",
-          PARTN_NUMB: selectedSoldtoParty.KUNNR,
-          ITM_NUMBER: "000000",
-        },
+        { PARTN_ROLE: "WE", PARTN_NUMB: selectedShiptoparty.KUNNR, ITM_NUMBER: "000000" },
+        { PARTN_ROLE: "AG", PARTN_NUMB: selectedSoldtoParty.KUNNR, ITM_NUMBER: "000000" },
       ],
-      lines: {
-        TDFORMAT: "*",
-        TDLINE: finalFormData.REMARKS,
-      },
+      lines: { TDFORMAT: "*", TDLINE: finalFormData.REMARKS },
       order_schedule: {
-        // Changed
         ITM_NUMBER: "000010",
-        //
-
         SCHED_LINE: "0001",
         REQ_QTY: finalFormData.TARGET_QTY,
-        // New Added
         REQ_DATE: finalFormData.DOC_DATE.split("-").join(""),
         DATE_TYPE: "1",
       },
       IM_L2_REASON: reason ? reason : "",
       IM_GUID: UUID,
       IM_LOGIN_ID: localStorage.getItem("user_code"),
-      IM_DUP_CONFIRM: confirm,
+      IM_DUP_CONFIRM: dupConfirmFlag,
       IM_DMS_REQID: soDetails?.dms_req_no ? soDetails?.dms_req_no : "",
     };
 
-    console.log(body);
+    console.log("[RFC_CALL] Payload:", body);
 
-    const returnData = await checkAndCreateOrder({
-      soldTo: selectedSoldtoParty.KUNNR,
-      shipTo: selectedShiptoparty.KUNNR,
-      quantity: finalFormData.TARGET_QTY,
-    });
-
-    if (!returnData) {
-      return;
-    }
-
+    // 4) Call SAP
     props.loading(true);
-    http
-      .post(apis.CREATE_SALES_ORDER, body)
-      .then((res) => {
-        if (
-          res.data.result.SALESDOCUMENT &&
-          res.data.result.SALESDOCUMENT !== ""
-        ) {
-          setCreatedSalesDocument(res.data.result.SALESDOCUMENT);
-          setSalesOrderResponse(res.data.result.RETURN);
-          setCurrentState("3");
-          console.log("Created");
+    try {
+      const res = await http.post(apis.CREATE_SALES_ORDER, body);
 
-          updateSO(
-            res.data.result?.RETURN[0].MESSAGE,
-            {
-              dms: soDetails.dms_req_no,
-              id: soDetails.id,
-              soNumber: res.data.result.SALESDOCUMENT,
-            },
-            "1"
-          );
-        } else {
-          let errmsg = res.data.result.RETURN.filter(
-            (e) => e.TYPE == "E" || e.TYPE == "I"
-          );
-          // toast.error(errmsg[0].MESSAGE);
-          let msg = "";
+      if (res?.data?.result?.SALESDOCUMENT) {
+        localStorage.removeItem("salesOrderUUID");
+        uuidRef.current = null;
+        // success
+        localStorage.removeItem("lastOrderCheck");
+        setCreatedSalesDocument(res.data.result.SALESDOCUMENT);
+        setSalesOrderResponse(res.data.result.RETURN);
+        setCurrentState("3");
 
-          if (errmsg.find((element) => element?.ID === "POP")) {
-            let msg = errmsg.find((element) => element?.ID === "POP");
-            Swal.fire({
-              title: "Are you sure?",
-              text: msg?.MESSAGE,
-              icon: "warning",
-              showCancelButton: true,
-              confirmButtonColor: "#3085d6",
-              cancelButtonColor: "#d33",
-              confirmButtonText: "Yes",
-            }).then((result) => {
-              if (result?.value) {
-                saveFormData("Y");
-              } else {
-                window.location.reload();
-              }
-            });
+        updateSO(
+          res.data.result?.RETURN?.[0]?.MESSAGE || "",
+          {
+            dms: soDetails.dms_req_no,
+            id: soDetails.id,
+            soNumber: res.data.result.SALESDOCUMENT,
+          },
+          "1"
+        );
+        // keep UUID in localStorage until fetchStatus clears it (or you can remove immediately if not used)
+      } else {
+        // handle SAP error returns
+        const errmsg = (res?.data?.result?.RETURN || []).filter((e) => e.TYPE === "E" || e.TYPE === "I");
+        if (errmsg.find((el) => el?.ID === "POP")) {
+          const pop = errmsg.find((el) => el?.ID === "POP");
+          // Ask user and when user confirms call saveFormData with confirmFromPop = "Y"
+          const result = await Swal.fire({
+            title: "Are you sure?",
+            text: pop?.MESSAGE,
+            icon: "warning",
+            showCancelButton: true,
+            confirmButtonColor: "#3085d6",
+            cancelButtonColor: "#d33",
+            confirmButtonText: "Yes",
+          });
+          if (result.isConfirmed) {
+            if (confirmFromPop === "Y") {
+              Swal.fire("Error", "SAP returned POP again. Aborting.", "error");
+              localStorage.removeItem("salesOrderUUID");
+              return;
+            }
+            // call again but skip duplicate-check this time and set confirm = "Y"
+            // Note: using confirmFromPop avoids infinite recursion since we skip duplicate-check when confirmFromPop === "Y"
+            await saveFormData("Y");
           } else {
-            errmsg.forEach((element, i) => {
-              msg += `<p>${i + 1}. ${element.MESSAGE} </p>`;
-            });
-            Swal.fire({
-              title: "Error!",
-              html: msg,
-              icon: "error",
-              confirmButtonText: "Ok",
-            });
+            // user declined, cleanup UUID
+            localStorage.removeItem("salesOrderUUID");
+            window.location.reload();
           }
+        } else {
+          let msg = "";
+          errmsg.forEach((el, i) => {
+            msg += `<p>${i + 1}. ${el.MESSAGE}</p>`;
+          });
+          Swal.fire({ title: "Error!", html: msg, icon: "error" });
+          // remove UUID as creation failed
+          localStorage.removeItem("salesOrderUUID");
         }
-      })
-      .catch((err) => {
-        console.log(err);
-
-        fetchStatus();
-      })
-      .finally(() => {
-        props.loading(false);
-      });
+      }
+    } catch (err) {
+      console.error("[RFC_ERROR]", err);
+      // Keep behavior you already have: call fetchStatus as fallback, but also ensure safe cleanup or retry policy
+      fetchStatus();
+    } finally {
+      props.loading(false);
+      // release locks
+      isSavingRef.current = false;
+      isSubmittingRef.current = false;
+    }
   };
+
 
   // Sleep function
   function sleep(ms) {
@@ -391,8 +476,8 @@ function DealerSOCreate(props) {
             value: data.sold_to_party,
             label: data.sold_to_party_name
               ? data.sold_to_party?.replace(/^0+/, "") +
-                " - " +
-                data.sold_to_party_name
+              " - " +
+              data.sold_to_party_name
               : data.sold_to_party?.replace(/^0+/, ""),
           });
           setSelectedSoldtoParty({
@@ -402,8 +487,8 @@ function DealerSOCreate(props) {
             value: data.ship_to_party,
             label: data.ship_to_party_name
               ? data.ship_to_party?.replace(/^0+/, "") +
-                " - " +
-                data.ship_to_party_name
+              " - " +
+              data.ship_to_party_name
               : data.ship_to_party?.replace(/^0+/, ""),
           });
           console.log(data.ship_to_party);
@@ -435,50 +520,82 @@ function DealerSOCreate(props) {
     // e46842af-53eb-4e26-929f-2a105408567e
   }, []);
 
+  let fetchAttemptsRef = useRef(0);
+  const MAX_FETCH_ATTEMPTS = 30;   // 30 attempts x 2 seconds = 60 seconds
+
   let fetchStatus = async () => {
     try {
       props.loading(true);
-      const data = await http.post(apis.COMMON_POST_WITH_FM_NAME, {
+
+      const guid = localStorage.getItem("salesOrderUUID");
+      if (!guid) return;
+
+      const res = await http.post(apis.COMMON_POST_WITH_FM_NAME, {
         fm_name: "ZSALES_ORDER_STATUS",
-        params: { IM_GUID: localStorage.getItem("salesOrderUUID") },
+        params: { IM_GUID: guid },
       });
 
-      if (data.data.result?.IM_GUID) {
-        if (data.data.result?.EX_STATUS === "P") {
-          await sleep(2000);
-          fetchStatus();
-        } else if (
-          data.data.result?.EX_STATUS === "S" &&
-          !data.data.result?.EX_VBELN
-        ) {
-          await sleep(2000);
-          fetchStatus();
+      const data = res.data.result;
+      if (!data) return;
+
+      // 🔄 Status = Pending
+      if (data.EX_STATUS === "P") {
+        fetchAttemptsRef.current++;
+        if (fetchAttemptsRef.current < MAX_FETCH_ATTEMPTS) {
+          setTimeout(fetchStatus, 2000);
         } else {
-          setSalesOrderStatus(data.data.result);
-          setCurrentState("3");
+          // max attempts reached -> cleanup
+          console.warn("fetchStatus: max attempts reached for GUID", guid);
           localStorage.removeItem("salesOrderUUID");
-          if (
-            data.data.result?.EX_STATUS === "S" &&
-            data.data.result?.EX_VBELN
-          ) {
-            updateSO(
-              data.data.result.EX_MESSAGE1,
-              {
-                dms: soDetails.dms_req_no,
-                id: soDetails.id,
-                soNumber: data.data.result.EX_VBELN,
-              },
-              "1"
-            );
-          }
+          fetchAttemptsRef.current = 0;
         }
+        return;
       }
-    } catch (error) {
-      fetchStatus();
+
+      // 🔄 Status = Success but VBELN still empty (delay)
+      if (data.EX_STATUS === "S" && !data.EX_VBELN) {
+        fetchAttemptsRef.current++;
+        if (fetchAttemptsRef.current < MAX_FETCH_ATTEMPTS) {
+          setTimeout(fetchStatus, 2000);
+        }
+        return;
+      }
+
+      // ✅ Status SUCCESS (final)
+      setSalesOrderStatus(data);
+      setCurrentState("3");
+
+      localStorage.removeItem("salesOrderUUID");
+      fetchAttemptsRef.current = 0;
+
+      // Update SO entry in Dealer DB
+      if (data.EX_STATUS === "S" && data.EX_VBELN) {
+        updateSO(
+          data.EX_MESSAGE1,
+          {
+            dms: soDetails.dms_req_no,
+            id: soDetails.id,
+            soNumber: data.EX_VBELN,
+          },
+          "1"
+        );
+      }
+
+    } catch (err) {
+      // 🔁 Retry on network failure
+      fetchAttemptsRef.current++;
+      if (fetchAttemptsRef.current < MAX_FETCH_ATTEMPTS) {
+        setTimeout(fetchStatus, 2000);
+      } else {
+        console.warn("fetchStatus: max attempts reached (network errors). clearing GUID");
+        localStorage.removeItem("salesOrderUUID");
+        fetchAttemptsRef.current = 0;
+      }
     } finally {
       props.loading(false);
     }
   };
+
 
   //+++++++++++++++++++++++++++++++++++++++++++++++++fetching order types && shipping plants && shipping types+++++++++++++++++++++++++++++++++++++
   useEffect(() => {
@@ -960,7 +1077,12 @@ function DealerSOCreate(props) {
         },
       })
       .then((res) => checkDOCType(res.data.result.ET_RETURN, row))
-      .catch((err) => PlantCheck(row));
+      .catch((err) => {
+        console.error("PlantCheck failed:", err);
+        // optionally show a toast / swal to user
+        props.loading(false);
+      });
+
   };
 
   const checkDOCType = (data, row) => {
@@ -1046,7 +1168,7 @@ function DealerSOCreate(props) {
   };
 
   // Common Value Update
-  const commonValueUpdate = (filedName, value, label) => {};
+  const commonValueUpdate = (filedName, value, label) => { };
 
   useEffect(() => {
     if (
@@ -1556,7 +1678,7 @@ function DealerSOCreate(props) {
                       // setSelectedShippingType(e.target.value)
                       selectValue(e)
                     }
-                    // defaultValue={"select"}
+                  // defaultValue={"select"}
                   >
                     <option>Select</option>
                     {allOrderShippingTypes.map((ele, i) => (
@@ -1757,18 +1879,18 @@ function DealerSOCreate(props) {
                       Object.keys(plantValue).length > 0 &&
                       Object.keys(materialValue).length > 0
                     ) ||
-                    allOrderTypes === "ZN02"
+                    selectAllOrderType === "ZN02"
                   }
                   className={
                     isValidDocType ||
-                    !(
-                      selectedShippingType.length !== 0 &&
-                      Object.keys(value).length > 0 &&
-                      Object.keys(shipToPartyValue).length > 0 &&
-                      Object.keys(plantValue).length > 0 &&
-                      Object.keys(materialValue).length > 0
-                    ) ||
-                    allOrderTypes === "ZN02"
+                      !(
+                        selectedShippingType.length !== 0 &&
+                        Object.keys(value).length > 0 &&
+                        Object.keys(shipToPartyValue).length > 0 &&
+                        Object.keys(plantValue).length > 0 &&
+                        Object.keys(materialValue).length > 0
+                      ) ||
+                      selectAllOrderType === "ZN02"
                       ? "button button-back"
                       : "button button-foreword"
                   }
@@ -1785,25 +1907,25 @@ function DealerSOCreate(props) {
       <div className={currentState === "3" ? "row input-area" : "d-none"}>
         {salesOrderResponse.length > 0
           ? salesOrderResponse.map((msg, i) => (
-              <>
-                <img
-                  className="success-img"
-                  src="/images/success_tick.jpeg"
-                  alt="tick"
-                />
-                &nbsp;&nbsp;
-                <span key={i} className="success-msg">
-                  {msg.MESSAGE}
-                </span>
-                <br />
-                <br />
-              </>
-            ))
+            <>
+              <img
+                className="success-img"
+                src="/images/success_tick.jpeg"
+                alt="tick"
+              />
+              &nbsp;&nbsp;
+              <span key={i} className="success-msg">
+                {msg.MESSAGE}
+              </span>
+              <br />
+              <br />
+            </>
+          ))
           : null}
 
         {(Object.keys(salesOrderStatus)?.length > 0 &&
           salesOrderStatus?.EX_MESSAGE1 !== "") ||
-        salesOrderResponse.length !== 0 ? (
+          salesOrderResponse.length !== 0 ? (
           <>
             {Object.keys(salesOrderStatus)?.length > 0 ? (
               <>
@@ -1869,7 +1991,7 @@ function DealerSOCreate(props) {
         size="lg"
         centered
         className="modal"
-        // onHide={() => setIsPlant2ModalVisible(false)}
+      // onHide={() => setIsPlant2ModalVisible(false)}
       >
         <Modal.Header>
           <Modal.Title>Select Plant Entries</Modal.Title>
@@ -1905,12 +2027,16 @@ function DealerSOCreate(props) {
                       setValue("PLANT", `${row.WERKS} - ${row.NAME1}`);
                       setIsPlant2ModalVisible(false);
                       setSelectedSupplyingPlant(row);
-                      setFinalFormData(row);
+                      //setFinalFormData(row);
                       setPlantValue({
                         value: row?.WERKS,
                         label: row?.WERKS + "-" + row?.NAME1,
                       });
-                      PlantCheck(row);
+                      PlantCheck(row).catch(() => {
+
+                        Swal.fire("Error", "Unable to validate plant", "error");
+                      });
+
                     }}
                   >
                     <td>{row.WERKS}</td>
@@ -1924,7 +2050,8 @@ function DealerSOCreate(props) {
                     <td>
                       <button
                         className="button search-button"
-                        onClick={() => {
+                        onClick={(ev) => {
+                          ev.stopPropagation(); // ✅ Prevent TR click firing
                           setSelectedPlant2(row);
                           setDisabledSP(true);
                           fetchReason(row);
@@ -1935,11 +2062,12 @@ function DealerSOCreate(props) {
                           });
                           setIsPlant2ModalVisible(false);
                           setSelectedSupplyingPlant(row);
-                          setFinalFormData(row);
+                          //setFinalFormData(row);
                         }}
                       >
                         select
                       </button>
+
                     </td>
                   </tr>
                 ))}
@@ -1958,7 +2086,7 @@ function DealerSOCreate(props) {
         size="lg"
         centered
         className="modal"
-        // onHide={() => setIsReasonModalVisible(false)}
+      // onHide={() => setIsReasonModalVisible(false)}
       >
         <Modal.Header>
           <Modal.Title>Select Reason Entries</Modal.Title>

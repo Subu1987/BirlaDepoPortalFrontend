@@ -13,6 +13,7 @@ import Modal from "react-bootstrap/Modal";
 import Table from "react-bootstrap/Table";
 import AsyncSelect from "react-select/async";
 import { v4 as uuidv4 } from "uuid";
+import { useRef } from "react";
 import Select from "react-select";
 import fetchCustomerNumber from "../../Functions/fetchCustomer";
 import filterOptions from "../../Functions/filterData";
@@ -34,11 +35,31 @@ let default_config = {
   keylabels: [],
   return_field_value: "",
   return_field_key: "",
-  setStateFunction: function () {},
+  setStateFunction: function () { },
 };
 
 function SalesOrderForm(props) {
   const [currentState, setCurrentState] = useState("1");
+  // 🚀 Duplicate-Order Protection
+  const isSubmittingRef = useRef(false);     // prevents double "Next"
+  const isSavingRef = useRef(false);         // prevents double saveFormData calls
+  // UUID is assigned freshly whenever user saves
+  const uuidRef = useRef(null);
+
+  // Generates a fresh GUID and stores it in both ref + localStorage
+  const generateFreshUUID = () => {
+    const newID = uuidv4();
+    uuidRef.current = newID;
+    localStorage.setItem("salesOrderUUID", newID);
+
+    console.log("%cNEW UUID GENERATED → " + newID,
+      "color: green; font-size: 14px; font-weight: bold;");
+
+    return newID;
+  };
+
+
+
   const {
     register,
     handleSubmit,
@@ -80,7 +101,8 @@ function SalesOrderForm(props) {
   const [allPromoters, setAllPromoters] = useState([]);
   const [shipToParty, setShiptoparty] = useState("");
   const [plant2Data, setPlant2Data] = useState([]);
-  const [selectedShippingType, setSelectedShippingType] = useAsyncState("");
+  //const [selectedShippingType, setSelectedShippingType] = useAsyncState("");
+  const [selectedShippingType, setSelectedShippingType] = useState("");
   const [selectAllOrderType, setAllOrderType] = useState("");
   const [isPlant2ModalVisible, setIsPlant2ModalVisible] = useState(false);
   const [selectedPlant2, setSelectedPlant2] = useState([]);
@@ -99,19 +121,56 @@ function SalesOrderForm(props) {
   const [materialOptions, setMaterialOptions] = useState([]);
   const [materialValue, setMaterialValue] = useState([]);
 
+  // Auto-resets button locks
+  useEffect(() => {
+    if (currentState === "1") {
+      isSubmittingRef.current = false;
+      isSavingRef.current = false;
+    }
+  }, [currentState]);
+
+  // Cleanup UUID after successful order or when component unmounts
+  useEffect(() => {
+    if (currentState === "3") {
+      localStorage.removeItem("salesOrderUUID");
+      uuidRef.current = null;
+    }
+  }, [currentState]);
+
+  useEffect(() => {
+    return () => {
+      uuidRef.current = null;
+      localStorage.removeItem("salesOrderUUID");
+    };
+  }, []);
+
+
   //+++++++++++++++++++++++++++++++++++++++++++++++++form submit handler++++++++++++++++++++++++++++++++++++++++++
-  const onSubmit = (data) => {
-    http
-      .post(apis.COMMON_POST_WITH_FM_NAME, {
+  const onSubmit = async (data) => {
+    if (isSubmittingRef.current) {
+      console.warn("Prevented duplicate onSubmit");
+      return;
+    }
+    isSubmittingRef.current = true;
+    try {
+      const res = await http.post(apis.COMMON_POST_WITH_FM_NAME, {
         fm_name: "ZRFC_DOCTYPE_PLANT_CHECK",
         params: {
           IM_AUART: selectAllOrderType,
           IM_WERKS: selectedSupplyingPlant.WERKS,
         },
-      })
-      .then((res) => checkDOCTypeAll(res.data.result.ET_RETURN, data))
-      .catch((err) => console.log(data));
+      });
+      await checkDOCTypeAll(res.data.result.ET_RETURN, data);
+    } catch (err) {
+      console.error("onSubmit error:", err);
+      // optionally show user friendly alert
+      Swal.fire({ title: "Error", text: "Failed to validate document type.", icon: "error" });
+    } finally {
+      // release submit lock so user can retry if needed
+      isSubmittingRef.current = false;
+    }
   };
+
 
   const checkDOCTypeAll = (data, dataOfForm) => {
     let isError = false;
@@ -176,15 +235,40 @@ function SalesOrderForm(props) {
 
   //+++++++++++++++++++++++++++++++++++++++++++++++++save form data to server+++++++++++++++++++++++++++++++++++++++++++++++++++++
   let saveFormData = async (confirm = "") => {
-    let UUID = uuidv4();
-    //api call
-    console.log(finalFormData, confirm);
+
+    console.log(
+      "%c[SAVE_ATTEMPT] Starting save... confirm=" + confirm,
+      "color:#007bff;font-weight:bold;"
+    );
+
+    // Create GUID
+    const UUID = generateFreshUUID();
+    console.log(
+      "%c[UUID_GENERATED] New GUID → " + UUID,
+      "color:green;font-size:14px;font-weight:bold;"
+    );
+
+    if (!finalFormData || Object.keys(finalFormData).length === 0) {
+      Swal.fire({
+        title: "Error",
+        text: "Form is incomplete. Please review before saving.",
+        icon: "error",
+      });
+      isSavingRef.current = false;
+      return;
+    }
+
+    console.log(
+      "%c[FINAL_FORM_DATA] Values collected before building RFC body:",
+      "color:#6f42c1;font-weight:bold;"
+    );
+    console.log(finalFormData);
+
     let incoDesc = allOrderIncoTerms.filter(
       (d) => d.INCO1 === finalFormData?.INCO_TERM1
     );
     incoDesc = incoDesc[0]?.BEZEI;
 
-    localStorage.setItem("salesOrderUUID", UUID);
     let body = {
       order_header: {
         DOC_TYPE: finalFormData.DOC_TYPE,
@@ -204,39 +288,27 @@ function SalesOrderForm(props) {
           SHIP_TYPE: finalFormData.SHIP_TYPE,
           SHIP_POINT: finalFormData.SHIP_POINT,
           ITM_NUMBER: "000010",
-          // Newly Added As per require
           SALES_UNIT: finalFormData.SALES_UNIT,
           TARGET_QTY: finalFormData.TARGET_QTY,
           TARGET_QU: finalFormData.SALES_UNIT,
         },
       ],
       partners: [
-        {
-          PARTN_ROLE: "WE",
-          PARTN_NUMB: selectedShiptoparty.KUNNR,
-          ITM_NUMBER: "000000",
-        },
-        {
-          PARTN_ROLE: "AG",
-          PARTN_NUMB: selectedSoldtoParty.KUNNR,
-          ITM_NUMBER: "000000",
-        },
+        { PARTN_ROLE: "WE", PARTN_NUMB: selectedShiptoparty.KUNNR, ITM_NUMBER: "000000" },
+        { PARTN_ROLE: "AG", PARTN_NUMB: selectedSoldtoParty.KUNNR, ITM_NUMBER: "000000" },
       ],
       lines: {
         TDFORMAT: "*",
         TDLINE: finalFormData.REMARKS,
       },
       order_schedule: {
-        // Changed
         ITM_NUMBER: "000010",
-        //
-
         SCHED_LINE: "0001",
         REQ_QTY: finalFormData.TARGET_QTY,
-        // New Added
         REQ_DATE: finalFormData.DOC_DATE.split("-").join(""),
         DATE_TYPE: "1",
       },
+
       IM_L2_REASON: reason ? reason : "",
       IM_GUID: UUID,
       IM_LOGIN_ID: localStorage.getItem("user_code"),
@@ -244,80 +316,76 @@ function SalesOrderForm(props) {
       IM_DMS_REQID: "",
     };
 
-    console.log(body);
-
-    const returnData = await checkAndCreateOrder({
-      soldTo: selectedSoldtoParty.KUNNR,
-      shipTo: selectedShiptoparty.KUNNR,
-      quantity: finalFormData.TARGET_QTY,
-    });
-
-    if (!returnData) {
+    // --------------------------
+    // DUPLICATE CHECK
+    // --------------------------
+    let returnData = null;
+    try {
+      returnData = await checkAndCreateOrder({
+        soldTo: selectedSoldtoParty.KUNNR,
+        shipTo: selectedShiptoparty.KUNNR,
+        quantity: finalFormData.TARGET_QTY,
+      });
+    } catch (err) {
+      console.error("checkAndCreateOrder threw:", err);
+      isSavingRef.current = false;
+      isSubmittingRef.current = false;
+      localStorage.removeItem("salesOrderUUID");
+      Swal.fire({ title: "Error", text: "Duplicate check failed. Try again.", icon: "error" });
       return;
     }
 
-    // sales order modified
-    const ORDER_HEADER_IN = {
-      ...body.order_header,
-    };
-    let ORDER_HEADER_INX = { ...body.order_header };
-    Object.keys(body.order_header).forEach((e) => {
-      if (ORDER_HEADER_IN[e] != undefined || ORDER_HEADER_IN[e] != null) {
-        ORDER_HEADER_INX[e] = "X";
-      } else {
-        ORDER_HEADER_INX[e] = undefined;
-      }
-    });
-    const ORDER_ITEMS_IN = body.order_items;
-
-    let ORDER_ITEMS_INX = [...body.order_items];
-    for (let i = 0; i < ORDER_ITEMS_IN.length; i++) {
-      let value = {};
-      Object.keys(ORDER_ITEMS_IN[i]).forEach((key) => {
-        if (key !== "ITM_NUMBER") {
-          value = { ...value, [key]: "X" };
-        } else {
-          value = { ...value, [key]: ORDER_ITEMS_IN[i][key] };
-        }
-      });
-      ORDER_ITEMS_INX[i] = value;
+    // ⛔ User clicked CANCEL on duplicate popup
+    if (!returnData.proceed) {
+      console.log("%c[USER_CANCELLED_DUPLICATE] Save stopped.", "color:orange;font-weight:bold;");
+      isSavingRef.current = false;
+      isSubmittingRef.current = false;
+      localStorage.removeItem("salesOrderUUID");
+      return;
     }
-    let ORDER_SCHEDULES_IN = {
-      ...body.order_schedule,
-    };
-    let ORDER_SCHEDULES_INX = {
-      ...ORDER_SCHEDULES_IN,
-    };
-    ORDER_SCHEDULES_INX.REQ_QTY = "X";
-    ORDER_SCHEDULES_INX.REQ_DATE = "X";
-    ORDER_SCHEDULES_INX.DATE_TYPE = "X";
+
+    // ✔ User clicked YES — pass IM_DUP_CONFIRM = 'Y'
+    if (returnData.confirm === "Y") {
+      body.IM_DUP_CONFIRM = "Y";
+      console.log("%c[CONFIRM_DUPLICATE] IM_DUP_CONFIRM = Y", "color:green;font-weight:bold;");
+    }
+
+    // --------------------------
+    // RFC STRUCTURE PREPARATION
+    // --------------------------
+    const ORDER_HEADER_IN = { ...body.order_header };
+    let ORDER_HEADER_INX = {};
+    Object.keys(body.order_header).forEach((k) => {
+      ORDER_HEADER_INX[k] = "X";
+    });
     delete ORDER_HEADER_INX.CREATED_BY;
-    ORDER_SCHEDULES_INX = { ...ORDER_SCHEDULES_INX, UPDATEFLAG: "I" };
 
-    const ORDER_PARTNERS = body.partners;
-    console.log(ORDER_SCHEDULES_INX, ORDER_SCHEDULES_IN);
+    const ORDER_ITEMS_IN = body.order_items;
+    let ORDER_ITEMS_INX = ORDER_ITEMS_IN.map((item) => {
+      let x = {};
+      Object.keys(item).forEach((k) => {
+        x[k] = k === "ITM_NUMBER" ? item[k] : "X";
+      });
+      return x;
+    });
 
-    console.log("INitiating RFC Call");
-    console.log(
-      "ORDER_HEADER_IN:",
-      ORDER_HEADER_IN,
-      "ORDER_HEADER_INX:",
-      ORDER_HEADER_INX,
-      "ORDER_ITEMS_IN:",
-      ORDER_ITEMS_IN,
-      "ORDER_ITEMS_INX:",
-      ORDER_ITEMS_INX,
-      "ORDER_PARTNERS:",
-      ORDER_PARTNERS
-    );
+    const ORDER_SCHEDULES_IN = [body.order_schedule];
+    let ORDER_SCHEDULES_INX = [{
+      ...body.order_schedule,
+      REQ_QTY: "X",
+      REQ_DATE: "X",
+      DATE_TYPE: "X",
+      UPDATEFLAG: "I",
+    }];
+
     let postData = {
-      ORDER_HEADER_IN: ORDER_HEADER_IN,
-      ORDER_HEADER_INX: ORDER_HEADER_INX,
-      ORDER_ITEMS_IN: ORDER_ITEMS_IN,
-      ORDER_ITEMS_INX: ORDER_ITEMS_INX,
-      ORDER_PARTNERS: ORDER_PARTNERS,
-      ORDER_SCHEDULES_IN: [ORDER_SCHEDULES_IN],
-      ORDER_SCHEDULES_INX: [ORDER_SCHEDULES_INX],
+      ORDER_HEADER_IN,
+      ORDER_HEADER_INX,
+      ORDER_ITEMS_IN,
+      ORDER_ITEMS_INX,
+      ORDER_PARTNERS: body.partners,
+      ORDER_SCHEDULES_IN,
+      ORDER_SCHEDULES_INX,
       LINES: [body.lines],
       IM_L2_REASON: body.IM_L2_REASON,
       IM_GUID: body.IM_GUID,
@@ -326,90 +394,47 @@ function SalesOrderForm(props) {
       IM_DMS_REQID: body.IM_DMS_REQID,
     };
 
+    console.log(
+      "%c[RFC_CALL] Payload sent to backend:",
+      "color:#d63384;font-weight:bold;"
+    );
+    console.log(postData);
+
+    // --------------------------
+    // RFC CALL
+    // --------------------------
     try {
       props.loading(true);
 
       const res = await SONewRFC(postData);
 
+      console.log("%c[RFC_RESPONSE]", "color:#0dcaf0;font-weight:bold;");
       console.log(res);
+
       if (res.SO_NUMBER) {
         setCreatedSalesDocument(res.SO_NUMBER);
         setSalesOrderResponse(res.DATA);
         setCurrentState("3");
       } else {
         let errmsg = res.DATA.filter((e) => e.TYPE === "E" || e.TYPE === "I");
-
         let msg = "";
-
-        errmsg.forEach((element, i) => {
-          msg += `<p>${i + 1}. ${element.MESSAGE} </p>`;
+        errmsg.forEach((e, i) => {
+          msg += `<p>${i + 1}. ${e.MESSAGE}</p>`;
         });
-        Swal.fire({
-          title: "Error!",
-          html: msg,
-          icon: "error",
-          confirmButtonText: "Ok",
-        });
+        Swal.fire({ title: "Error!", html: msg, icon: "error" });
       }
+
     } catch (error) {
+      console.error("RFC Error:", error);
+
     } finally {
       props.loading(false);
+      console.log("%c[UNLOCK] Releasing save locks", "color:#20c997;font-weight:bold;");
+      isSavingRef.current = false;
+      isSubmittingRef.current = false;
     }
-
-    // http
-    //   .post(apis.CREATE_SALES_ORDER, body)
-    //   .then((res) => {
-    //     if (
-    //       res.data.result.SALESDOCUMENT &&
-    //       res.data.result.SALESDOCUMENT !== ""
-    //     ) {
-    //       setCreatedSalesDocument(res.data.result.SALESDOCUMENT);
-    //       setSalesOrderResponse(res.data.result.RETURN);
-    //       setCurrentState("3");
-    //     } else {
-    //       let errmsg = res.data.result.RETURN.filter(
-    //         (e) => e.TYPE == "E" || e.TYPE == "I"
-    //       );
-    //       // toast.error(errmsg[0].MESSAGE);
-    //       let msg = "";
-
-    //       if (errmsg.find((element) => element?.ID === "POP")) {
-    //         let msg = errmsg.find((element) => element?.ID === "POP");
-    //         Swal.fire({
-    //           title: "Are you sure?",
-    //           text: msg?.MESSAGE,
-    //           icon: "warning",
-    //           showCancelButton: true,
-    //           confirmButtonColor: "#3085d6",
-    //           cancelButtonColor: "#d33",
-    //           confirmButtonText: "Yes",
-    //         }).then((result) => {
-    //           if (result?.value) {
-    //             saveFormData("Y");
-    //           } else {
-    //             window.location.reload();
-    //           }
-    //         });
-    //       } else {
-    //         errmsg.forEach((element, i) => {
-    //           msg += `<p>${i + 1}. ${element.MESSAGE} </p>`;
-    //         });
-    //         Swal.fire({
-    //           title: "Error!",
-    //           html: msg,
-    //           icon: "error",
-    //           confirmButtonText: "Ok",
-    //         });
-    //       }
-    //     }
-    //   })
-    //   .catch((err) => {
-    //     fetchStatus();
-    //   })
-    //   .finally(() => {
-    //     props.loading(false);
-    //   });
   };
+
 
   // Sleep function
   function sleep(ms) {
@@ -418,30 +443,52 @@ function SalesOrderForm(props) {
 
   //+++++++++++++++++++++++++ Fetch Status of sales order ++++++++++++++++++++++++++//
 
+  const fetchAttemptsRef = useRef(0);
+  const MAX_FETCH_ATTEMPTS = 30; // e.g., ~ 1 minute if interval=2s
+
   let fetchStatus = async () => {
     try {
       props.loading(true);
+      const guid = localStorage.getItem("salesOrderUUID");
+      if (!guid) return; // nothing to poll
+
       const data = await http.post(apis.COMMON_POST_WITH_FM_NAME, {
         fm_name: "ZSALES_ORDER_STATUS",
-        params: { IM_GUID: localStorage.getItem("salesOrderUUID") },
+        params: { IM_GUID: guid },
       });
 
       if (data.data.result?.IM_GUID) {
         if (data.data.result?.EX_STATUS === "P") {
-          await sleep(2000);
-          fetchStatus();
+          fetchAttemptsRef.current++;
+          if (fetchAttemptsRef.current < MAX_FETCH_ATTEMPTS) {
+            setTimeout(fetchStatus, 2000);
+          } else {
+            // give up after N attempts
+            Swal.fire({ title: "Timeout", text: "Order status taking too long. Check later.", icon: "warning" });
+          }
         } else {
           setSalesOrderStatus(data.data.result);
           setCurrentState("3");
           localStorage.removeItem("salesOrderUUID");
+          fetchAttemptsRef.current = 0;
         }
+      } else {
+        // no GUID or no result -> stop polling
       }
     } catch (error) {
-      fetchStatus();
+      console.error("fetchStatus error:", error);
+      // schedule retry with backoff
+      fetchAttemptsRef.current++;
+      if (fetchAttemptsRef.current < MAX_FETCH_ATTEMPTS) {
+        setTimeout(fetchStatus, 2000);
+      } else {
+        Swal.fire({ title: "Error", text: "Unable to fetch order status right now.", icon: "error" });
+      }
     } finally {
       props.loading(false);
     }
   };
+
 
   //+++++++++++++++++++++++++++++++++++++++++++++++++fetching order types && shipping plants && shipping types+++++++++++++++++++++++++++++++++++++
   useEffect(() => {
@@ -1044,7 +1091,7 @@ function SalesOrderForm(props) {
   };
 
   // Common Value Update
-  const commonValueUpdate = (filedName, value, label) => {};
+  const commonValueUpdate = (filedName, value, label) => { };
 
   useEffect(() => {
     if (
@@ -1060,6 +1107,22 @@ function SalesOrderForm(props) {
   }, [selectedSupplyingPlant]);
 
   const customStyle = {};
+
+  // FINAL handleSafeSave — UI throttle only
+  const handleSafeSave = () => {
+    // Prevent ultra-fast repeated clicks
+    if (isSavingRef.current) {
+      console.warn("⛔ Duplicate save prevented (UI throttle)");
+      return;
+    }
+
+    // Set lock until saveFormData starts and later unlocks in finally()
+    isSavingRef.current = true;
+
+    saveFormData();
+  };
+
+
   return (
     <div>
       <div className="col process-div">
@@ -1609,7 +1672,7 @@ function SalesOrderForm(props) {
                       // fetchPlant2();
                       // setTimeout(setSelectedShippingType(e.target.value), 1000);
                     }
-                    // defaultValue={"select"}
+                  // defaultValue={"select"}
                   >
                     <option>Select</option>
                     {allOrderShippingTypes.map((ele, i) => (
@@ -1827,7 +1890,7 @@ function SalesOrderForm(props) {
                   // type="button"
                   style={{ cursor: "pointer" }}
                   className="button button-foreword"
-                  onClick={() => saveFormData()}
+                  onClick={handleSafeSave}
                 >
                   Save
                 </div>
@@ -1851,18 +1914,18 @@ function SalesOrderForm(props) {
                       Object.keys(plantValue).length > 0 &&
                       Object.keys(materialValue).length > 0
                     ) ||
-                    allOrderTypes === "ZN02"
+                    selectAllOrderType === "ZN02"
                   }
                   className={
                     isValidDocType ||
-                    !(
-                      selectedShippingType.length !== 0 &&
-                      Object.keys(value).length > 0 &&
-                      Object.keys(shipToPartyValue).length > 0 &&
-                      Object.keys(plantValue).length > 0 &&
-                      Object.keys(materialValue).length > 0
-                    ) ||
-                    allOrderTypes === "ZN02"
+                      !(
+                        selectedShippingType.length !== 0 &&
+                        Object.keys(value).length > 0 &&
+                        Object.keys(shipToPartyValue).length > 0 &&
+                        Object.keys(plantValue).length > 0 &&
+                        Object.keys(materialValue).length > 0
+                      ) ||
+                      selectAllOrderType === "ZN02"
                       ? "button button-back"
                       : "button button-foreword"
                   }
@@ -1879,25 +1942,25 @@ function SalesOrderForm(props) {
       <div className={currentState === "3" ? "row input-area" : "d-none"}>
         {salesOrderResponse.length > 0
           ? salesOrderResponse.map((msg, i) => (
-              <React.Fragment key={i}>
-                <img
-                  className="success-img"
-                  src="/images/success_tick.jpeg"
-                  alt="Tick"
-                />
-                &nbsp;&nbsp;
-                <span key={i} className="success-msg">
-                  {msg.MESSAGE}
-                </span>
-                <br />
-                <br />
-              </React.Fragment>
-            ))
+            <React.Fragment key={i}>
+              <img
+                className="success-img"
+                src="/images/success_tick.jpeg"
+                alt="Tick"
+              />
+              &nbsp;&nbsp;
+              <span key={i} className="success-msg">
+                {msg.MESSAGE}
+              </span>
+              <br />
+              <br />
+            </React.Fragment>
+          ))
           : null}
 
         {(Object.keys(salesOrderStatus)?.length > 0 &&
           salesOrderStatus?.EX_MESSAGE1 !== "") ||
-        salesOrderResponse.length !== 0 ? (
+          salesOrderResponse.length !== 0 ? (
           <>
             {Object.keys(salesOrderStatus)?.length > 0 ? (
               <>
@@ -1987,7 +2050,7 @@ function SalesOrderForm(props) {
         size="lg"
         centered
         className="modal"
-        // onHide={() => setIsPlant2ModalVisible(false)}
+      // onHide={() => setIsPlant2ModalVisible(false)}
       >
         <Modal.Header>
           <Modal.Title>Select Plant Entries</Modal.Title>
@@ -2042,7 +2105,8 @@ function SalesOrderForm(props) {
                     <td>
                       <button
                         className="button search-button"
-                        onClick={() => {
+                        onClick={(ev) => {
+                          ev.stopPropagation();
                           setSelectedPlant2(row);
                           setDisabledSP(true);
                           fetchReason(row);
@@ -2058,6 +2122,7 @@ function SalesOrderForm(props) {
                       >
                         select
                       </button>
+
                     </td>
                   </tr>
                 ))}
@@ -2076,7 +2141,7 @@ function SalesOrderForm(props) {
         size="lg"
         centered
         className="modal"
-        // onHide={() => setIsReasonModalVisible(false)}
+      // onHide={() => setIsReasonModalVisible(false)}
       >
         <Modal.Header>
           <Modal.Title>Select Reason Entries</Modal.Title>
