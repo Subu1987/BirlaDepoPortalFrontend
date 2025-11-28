@@ -2,57 +2,73 @@ import Swal from "sweetalert2";
 
 async function checkAndCreateOrder(order) {
   const STORAGE_KEY = "salesOrders";
-  const FIVE_MINUTES = 3 * 60 * 1000; // 3 minutes in milliseconds
-  const MAX_ORDERS = 10;
+  const FIFTEEN_MINUTES = 15 * 60 * 1000;
+  const MAX_ORDERS = 20;
   const now = Date.now();
 
   let orders = JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
 
-  // Remove entries older than 5 minutes (for duplicate check purposes only)
+  const normalize = (v) => (v ? String(v).trim() : "");
+
+  const soldTo = normalize(order.soldTo);
+  const shipTo = normalize(order.shipTo);
+  const quantity = normalize(order.quantity);
+
+  console.log("%c[DUP_CHECK] Incoming order:", "color:#0288d1;font-weight:bold;");
+  console.log({ soldTo, shipTo, quantity });
+
   const recentOrders = orders.filter(
-    (entry) => now - entry.timestamp < FIVE_MINUTES
+    (entry) => now - entry.timestamp < FIFTEEN_MINUTES
   );
 
-  // Check for duplicate in recent orders
   const duplicate = recentOrders.find(
     (entry) =>
-      entry.soldTo === order.soldTo &&
-      entry.shipTo === order.shipTo &&
-      entry.quantity === order.quantity
+      normalize(entry.soldTo) === soldTo &&
+      normalize(entry.shipTo) === shipTo &&
+      normalize(entry.quantity) === quantity
   );
 
   if (duplicate) {
+    console.log("%c[DUPLICATE_DETECTED]", "color:red;font-weight:bold;");
+    console.log(duplicate);
+
     const result = await Swal.fire({
       title: "Possible Duplicate Order",
-      text: "A similar order was placed in the last 3 minutes; please verify and proceed if correct.",
+      text: "A similar order was created in the last 15 minutes. Do you want to continue?",
       icon: "warning",
       showCancelButton: true,
-      confirmButtonText: "Yes, create it",
-      cancelButtonText: "No, cancel",
+      confirmButtonText: "Yes, proceed",
+      cancelButtonText: "Cancel"
     });
 
+    console.log("%c[SWAL_RESULT] =>", "color:#6a1b9a;font-weight:bold;", result);
+
+    // 👉 FIXED: use result.value instead of result.isConfirmed
     if (!result.value) {
-      return false; // User canceled
+      console.log("%c[USER_CANCELLED_DUPLICATE]", "color:#d50000;font-weight:bold;");
+      return { proceed: false };
     }
+
+    console.log("%c[USER_CONFIRMED_DUPLICATE]", "color:#00c853;font-weight:bold;");
+    return { proceed: true, confirm: "Y" };
   }
 
-  // Add the new order
+  console.log("%c[NO_DUPLICATE] No previous entry within 15 min", "color:green;font-weight:bold;");
+
   orders.push({
-    soldTo: order.soldTo,
-    shipTo: order.shipTo,
-    quantity: order.quantity,
+    soldTo,
+    shipTo,
+    quantity,
     timestamp: now,
   });
 
-  // Keep only the latest 20 orders (regardless of timestamp)
   if (orders.length > MAX_ORDERS) {
-    orders = orders.slice(orders.length - MAX_ORDERS);
+    orders = orders.slice(-MAX_ORDERS);
   }
 
-  // Save back to localStorage
   localStorage.setItem(STORAGE_KEY, JSON.stringify(orders));
 
-  return true; // Proceed with order creation
+  return { proceed: true, confirm: "" };
 }
 
 export default checkAndCreateOrder;
