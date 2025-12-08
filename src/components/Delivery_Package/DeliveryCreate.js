@@ -269,7 +269,8 @@ function DeliveryCreate(props) {
           setWithValidationTrigger("ROUTE", res.data.result.ROUTE);
           setWithValidationTrigger(
             "MATERIAL",
-            `${res.data.result.MATERIAL.replace(/^0+/, "")}-${res.data.result.MATERIAL_DESC
+            `${res.data.result.MATERIAL.replace(/^0+/, "")}-${
+              res.data.result.MATERIAL_DESC
             }`
           );
           setWithValidationTrigger("ISSUE_QUANTITY", res.data.result.ISSUE_QTY);
@@ -531,7 +532,6 @@ function DeliveryCreate(props) {
         });
     }
   }, [defaultOrderDetails]);
-
 
   //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -860,6 +860,15 @@ function DeliveryCreate(props) {
     });
   };
 
+  // Date: 08/12/2025, Issue: Valuation Type Should be input box if ORDER_TYPE = "ZLO5"
+  // Listen to live ORDER_TYPE value from form
+  
+  const selectedOrderType = watch("ORDER_TYPE");
+  const isManualValuation = selectedOrderType === "ZLO5";
+
+  const isValuationDropdownDisabled =
+    valuationTypes.length === 0 && !isManualValuation;
+
   return (
     <div>
       {/* Input Form Open */}
@@ -1043,7 +1052,7 @@ function DeliveryCreate(props) {
                           e.target.value
                         );
                       }}
-                    //   value={storageSearch1}
+                      //   value={storageSearch1}
                     />
                     {errors.STORAGE_LOCATION && (
                       <p className="form-error">This field is required</p>
@@ -1423,7 +1432,7 @@ function DeliveryCreate(props) {
                 </div>
               </div>
 
-              {VKORG?.toUpperCase() === "RECL" && (
+              {/* {VKORG?.toUpperCase() === "RECL" && (
                 <div className="col">
                   {console.log(valuationTypes, "Valuation Types")}
                   <div className="row">
@@ -1464,12 +1473,68 @@ function DeliveryCreate(props) {
                     </div>
                   </div>
                 </div>
+              )} */}
+
+              {/* Date: 08/12/2025, Issue: Valuation Type should be input box if ORDER_TYPE = "ZLO5" */}
+
+              {VKORG?.toUpperCase() === "RECL" && (
+                <div className="col">
+                  <div className="row">
+                    <div className="col-3">
+                      <label>
+                        Valuation Type<span>*</span>
+                      </label>
+                    </div>
+
+                    <div className="col-9">
+                      {isManualValuation ? (
+                        <input
+                          type="text"
+                          name="VALUATION_TYPE"
+                          className="form-control"
+                          ref={register({ required: true })}
+                          placeholder="Enter Valuation Type manually"
+                        />
+                      ) : (
+                        <select
+                          name="VALUATION_TYPE"
+                          ref={register({
+                            required:
+                              isManualValuation || valuationTypes.length > 0, // ✔ Correct validation
+                          })}
+                          defaultValue=""
+                          className="form-control"
+                          disabled={valuationTypes.length === 0}
+                        >
+                          <option value="">
+                            {valuationTypes.length === 0
+                              ? "Loading valuation types..."
+                              : "Select Valuation Type"}
+                          </option>
+
+                          {valuationTypes.map((item, index) => {
+                            const value =
+                              typeof item === "object" ? item.BWTAR : item;
+                            return (
+                              <option key={index} value={value}>
+                                {value}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      )}
+
+                      {/* Show error only when field should be active */}
+                      {errors.VALUATION_TYPE &&
+                        !isValuationDropdownDisabled && (
+                          <p className="form-error">This field is required</p>
+                        )}
+                    </div>
+                  </div>
+                </div>
               )}
-
-
-
-
             </div>
+
             <div className="row">
               <div className="col">
                 <div className="row">
@@ -1551,7 +1616,7 @@ function DeliveryCreate(props) {
         <div className={currentState === "3" ? "row input-area" : "d-none"}>
           {(Object.keys(deliveryStatus)?.length > 0 &&
             deliveryStatus?.EX_MESSAGE1 !== "") ||
-            createdDelivery !== "" ? (
+          createdDelivery !== "" ? (
             <>
               {Object.keys(deliveryStatus)?.length > 0 ? (
                 <>
